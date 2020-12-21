@@ -6,6 +6,7 @@
 #include <functional>
 #include <type_traits>
 #include <stdexcept>
+#include "splay_tree.h"
 
 template <typename Left, typename Right,
     typename CompareLeft = std::less<Left>, typename CompareRight = std::less<Right>>
@@ -14,53 +15,10 @@ struct bimap {
   using right_t = Right;
 
 private:
-  struct left_tag;
-  struct right_tag;
-
-  template <typename Tag, typename Dummy = void>
-  struct node {
-    explicit node(left_t &&value) : value(std::move(value)) {}
-    explicit node(left_t const &value) : value(value) {}
-
-    ~node() = default;
-
-    left_t value;
-    node *parent = nullptr;
-    node *left = nullptr;
-    node *right = nullptr;
-  };
-
-  template <typename Dummy>
-  struct node<right_tag, Dummy> {
-    explicit node(right_t &&value) : value(std::move(value)) {}
-    explicit node(right_t const &value) : value(value) {}
-
-    ~node() = default;
-
-    right_t value;
-    node *parent = nullptr;
-    node *left = nullptr;
-    node *right = nullptr;
-  };
-
-  struct splay_tree : node<left_tag>, node<right_tag> {
-    splay_tree() = default;
-
-    splay_tree(splay_tree const &other)
-        : node<left_tag>(get_node<left_tag>(&other)->value),
-          node<right_tag>(get_node<right_tag>(&other)->value) {}
-
-    splay_tree(left_t &&first_value, right_t &&second_value)
-        : node<left_tag>(std::move(first_value)), node<right_tag>(std::move(second_value)) {}
-    splay_tree(left_t const &first_value, right_t &&second_value)
-        : node<left_tag>(first_value), node<right_tag>(std::move(second_value)) {}
-    splay_tree(left_t &&first_value, right_t const &second_value)
-        : node<left_tag>(std::move(first_value)), node<right_tag>(second_value) {}
-    splay_tree(left_t const &first_value, right_t const &second_value)
-        : node<left_tag>(first_value), node<right_tag>(second_value) {}
-
-    ~splay_tree() = default;
-  };
+  static constexpr node<left_tag, left_t>* (*get_node_l)(splay_tree<left_t, right_t>*) =
+      &get_node<left_tag, left_t, right_t, left_t>;
+  static constexpr node<right_tag, right_t>* (*get_node_r)(splay_tree<left_t, right_t>*) =
+      &get_node<right_tag, left_t, right_t, right_t>;
 
   template <typename Tag, typename T>
   bool less(T const &a, T const &b) const {
@@ -84,7 +42,7 @@ private:
    * @return node with equal value if tree with root t, contains it, nullptr otherwise
    */
   template <typename Tag, typename T>
-  node<Tag> *find(node<Tag> *t, T const &value) const {
+  node<Tag, T> *find(node<Tag, T> *t, T const &value) const {
     if (!t) {
       return t;
     }
@@ -109,16 +67,16 @@ private:
   /**
    * @return was element inserted or not
    */
-  template <typename Tag>
-  bool insert(node<Tag> *new_node) const {
-    node<Tag> *t = get_root<Tag>();
+  template <typename Tag, typename T>
+  bool insert(node<Tag, T> *new_node) const {
+    node<Tag, T> *t = get_root<Tag, T>();
 
     if (!t) {
       set_tree_root(new_node);
       return true;
     }
 
-    std::pair<node<Tag>*, node<Tag>*> tmp = split<Tag>(new_node->value);
+    std::pair<node<Tag, T>*, node<Tag, T>*> tmp = split<Tag>(new_node->value);
 
     if (tmp.first && tmp.first->value == new_node->value) {
       merge(tmp.first, tmp.second);
@@ -144,7 +102,7 @@ private:
  */
   template <typename Tag, typename T>
   bool remove(T const &value) const {
-    node<Tag> *t = get_root<Tag>();
+    node<Tag, T> *t = get_root<Tag, T>();
 
     if (!t) {
       return false;
@@ -169,8 +127,8 @@ private:
   /**
    * @return next element or nullptr if element is last in tree
    */
-  template <typename Tag>
-  node<Tag>* next(node<Tag> *t) const {
+  template <typename Tag, typename T>
+  node<Tag, T>* next(node<Tag, T> *t) const {
     if (!t) {
       return t;
     }
@@ -181,7 +139,7 @@ private:
       return nullptr;
     }
 
-    node<Tag> *tmp = t->right;
+    node<Tag, T> *tmp = t->right;
     while (tmp->left) {
       tmp = tmp->left;
     }
@@ -191,8 +149,8 @@ private:
 
 
   template <typename Tag, typename T>
-  node<Tag> *next(T const &value) const {
-    node<Tag> *t = get_root<Tag>();
+  node<Tag, T> *next(T const &value) const {
+    node<Tag, T> *t = get_root<Tag, T>();
 
     if (!t) {
       return t;
@@ -213,39 +171,19 @@ private:
     }
   }
 
-//  /**
-//   * @return pair with root of new tree and prev element
-//   */
-//  template <typename Tag>
-//  std::pair<node<Tag>*, node<Tag>*> prev(node<Tag> *t) const {
-//    t = splay(t);
-//
-//    if (!t->left) {
-//      return {t, nullptr};
-//    }
-//
-//    node<Tag> *tmp = t->left;
-//    while (tmp->right) {
-//      tmp = tmp->right;
-//    }
-//
-//    tmp = splay(tmp);
-//    return {tmp, tmp};
-//  }
-
-  template <typename Tag>
-  void destroy(node<Tag> *t) {
+  template <typename Tag, typename T>
+  void destroy(node<Tag, T> *t) {
     if (!t) {
       return;
     }
 
     destroy(t->left);
     destroy(t->right);
-    delete get_splay(t);
+    delete get_splay<Tag, left_t, right_t>(t);
   }
 
-  template <typename Tag>
-  node<Tag> *zig(node<Tag> *t) const{
+  template <typename Tag, typename T>
+  node<Tag, T> *zig(node<Tag, T> *t) const{
     if (less<Tag>(t->value, t->parent->value)) {
       t->parent->left = t->right;
       if (t->right) {
@@ -262,20 +200,20 @@ private:
       t->left = t->parent;
     }
 
-    node<Tag> *tmp = t->parent->parent;
+    node<Tag, T> *tmp = t->parent->parent;
     t->parent->parent = t;
     t->parent = tmp;
 
     return t;
   }
 
-  template <typename Tag>
-  node<Tag> *splay(node<Tag> *t) const {
+  template <typename Tag, typename T>
+  node<Tag, T> *splay(node<Tag, T> *t) const {
     if (!t || !t->parent) {
-      return get_root<Tag>() = t;
+      return get_root<Tag, T>() = t;
     }
     if (!t->parent->parent) {
-      return get_root<Tag>() = zig(t);
+      return get_root<Tag, T>() = zig(t);
     }
 
     bool t_to_p = less<Tag>(t->value, t->parent->value);
@@ -295,13 +233,13 @@ private:
    * @return two trees, all elements in first tree <= value
    */
   template <typename Tag, typename T>
-  std::pair<node<Tag>*, node<Tag>*> split(T const &value) const {
-    node<Tag> *t = next<Tag>(value);
+  std::pair<node<Tag, T>*, node<Tag, T>*> split(T const &value) const {
+    node<Tag, T> *t = next<Tag>(value);
     if (!t) {
-      return {get_root<Tag>(), t};
+      return {get_root<Tag, T>(), t};
     }
 
-    node<Tag> *left_new = t->left;
+    node<Tag, T> *left_new = t->left;
     t->left = nullptr;
 
     if (left_new) {
@@ -310,8 +248,8 @@ private:
     return {left_new, t};
   }
 
-  template <typename Tag>
-  node<Tag> *find_max(node<Tag> *t) const {
+  template <typename Tag, typename T>
+  node<Tag, T> *find_max(node<Tag, T> *t) const {
     while (t->right) {
       t = t->right;
     }
@@ -319,8 +257,8 @@ private:
     return set_tree_root(t);
   }
 
-  template <typename Tag>
-  node<Tag> *find_min(node<Tag> *t) const {
+  template <typename Tag, typename T>
+  node<Tag, T> *find_min(node<Tag, T> *t) const {
     while (t->left) {
       t = t->left;
     }
@@ -328,8 +266,8 @@ private:
     return set_tree_root(t);
   }
 
-  template <typename Tag>
-  void merge(node<Tag> *a, node<Tag> *b) const {
+  template <typename Tag, typename T>
+  void merge(node<Tag, T> *a, node<Tag, T> *b) const {
     if (!a) {
       set_tree_root(b);
       return;
@@ -373,7 +311,7 @@ private:
       return *this;
     }
     iterator operator++(int) {
-      node<Tag> *old = tree;
+      node<Tag, T> *old = tree;
       ++*this;
 
       return {old};
@@ -399,7 +337,7 @@ private:
       return *this;
     }
     iterator operator--(int) {
-      node<Tag> *old = tree;
+      node<Tag, T> *old = tree;
       --*this;
 
       return {old};
@@ -426,13 +364,13 @@ private:
       return tree != other.tree;
     }
 
-    iterator(node<Tag> *tree) : tree(tree) {};
+    iterator(node<Tag, T> *tree) : tree(tree) {};
     iterator(iterator const &other) : tree(other.tree) {};
 
     /**
      * if tree == nullptr, then iterator = end()
      */
-    node<Tag> *tree;
+    node<Tag, T> *tree;
   };
 
 public:
@@ -528,11 +466,11 @@ public:
   left_iterator erase_left(left_iterator it) {
     splay(it.tree);
 
-    splay_tree *tmp = get_splay(it.tree);
-    node<left_tag> *nxt = next(tree_left);
+    splay_tree<left_t, right_t> *tmp = get_splay<left_tag, left_t, right_t>(it.tree);
+    node<left_tag, left_t> *nxt = next(tree_left);
 
     remove<left_tag>(*it);
-    remove<right_tag>(get_node<right_tag>(tmp)->value);
+    remove<right_tag>(get_node_r(tmp)->value);
 
     siz--;
     delete tmp;
@@ -542,7 +480,7 @@ public:
   // Аналогично erase, но по ключу, удаляет элемент если он присутствует, иначе
   // не делает ничего Возвращает была ли пара удалена
   bool erase_left(left_t const &left) {
-    node<left_tag> *t = find(tree_left, left);
+    node<left_tag, left_t> *t = find(tree_left, left);
     if (!t || t->value != left) {
       return false;
     }
@@ -554,10 +492,10 @@ public:
   right_iterator erase_right(right_iterator it) {
     splay(it.tree);
 
-    splay_tree *tmp = get_splay(it.tree);
-    node<right_tag> *nxt = next(tree_right);
+    splay_tree<left_t, right_t> *tmp = get_splay<right_tag, left_t, right_t>(it.tree);
+    node<right_tag, right_t> *nxt = next(tree_right);
 
-    remove<left_tag>(get_node<left_tag>(tmp)->value);
+    remove<left_tag>(get_node_l(tmp)->value);
     remove<right_tag>(*it);
 
     siz--;
@@ -566,7 +504,7 @@ public:
     return right_iterator(nxt);
   }
   bool erase_right(right_t const &right) {
-    node<right_tag> *t = find(tree_right, right);
+    node<right_tag, right_t> *t = find(tree_right, right);
     if (!t || t->value != right) {
       return false;
     }
@@ -594,7 +532,7 @@ public:
 
   // Возвращает итератор по элементу. Если не найден - соответствующий end()
   left_iterator find_left(left_t const &left) const {
-    node<left_tag> *t = find(tree_left, left);
+    node<left_tag, right_t> *t = find(tree_left, left);
     if (t && t->value == left) {
       return left_iterator(t);
     } else {
@@ -602,7 +540,7 @@ public:
     }
   }
   right_iterator find_right(right_t const &right) const {
-    node<right_tag> *t = find(tree_right, right);
+    node<right_tag, right_t> *t = find(tree_right, right);
     if (t && t->value == right) {
       return right_iterator(t);
     } else {
@@ -615,7 +553,7 @@ public:
   right_t const &at_left(left_t const &key) const {
     find<left_tag, left_t>(tree_left, key);
 
-    node<right_tag> *opposite_node = get_node<right_tag>(get_splay(tree_left));
+    node<right_tag, right_t> *opposite_node = get_node_r(get_splay<left_tag, left_t, right_t, left_t>(tree_left));
     if (tree_left && tree_left->value == key) {
       return opposite_node->value;
     }
@@ -625,7 +563,7 @@ public:
   left_t const &at_right(right_t const &key) const {
     find<right_tag, right_t>(tree_right, key);
 
-    node<left_tag> *opposite_node = get_node<left_tag>(get_splay(tree_right));
+    node<left_tag, left_t> *opposite_node = get_node_l(get_splay<right_tag, left_t, right_t>(tree_right));
     if (tree_right && tree_right->value == key) {
       return opposite_node->value;
     }
@@ -639,7 +577,7 @@ public:
   // соответствующий ему элемент на запрашиваемый (смотри тесты)
   right_t const &at_left_or_default(left_t const &key) {
     find<left_tag, left_t>(tree_left, key);
-    node<right_tag> *opposite_node = get_node<right_tag>(get_splay(tree_left));
+    node<right_tag, right_t> *opposite_node = get_node_r(get_splay<left_tag, left_t, right_t>(tree_left));
 
     if (tree_left) {
       if (tree_left->value == key) {
@@ -655,11 +593,11 @@ public:
       insert(key, right_t());
     }
 
-    return get_node<right_tag>(get_splay(find<left_tag, left_t>(tree_left, key)))->value;
+    return get_node_r(get_splay<left_tag, left_t, right_t>(find<left_tag, left_t>(tree_left, key)))->value;
   }
   left_t const &at_right_or_default(right_t const &key) {
     find<right_tag, right_t>(tree_right, key);
-    node<left_tag> *opposite_node = get_node<left_tag>(get_splay(tree_right));
+    node<left_tag, left_t> *opposite_node = get_node_l(get_splay<right_tag, left_t, right_t>(tree_right));
 
     if (tree_right) {
       if (tree_right->value == key) {
@@ -675,7 +613,7 @@ public:
       insert(left_t(), key);
     }
 
-    return get_node<left_tag>(get_splay(find<right_tag, right_t>(tree_right, key)))->value;
+    return get_node_l(get_splay<right_tag, left_t, right_t>(find<right_tag, right_t>(tree_right, key)))->value;
   }
 
   // lower и upper bound'ы по каждой стороне
@@ -748,7 +686,7 @@ public:
 private:
   template <typename Tag, typename T>
   auto bound_operation(T const &value, bool lower_bound) const {
-    node<Tag> *tree = find(get_root<Tag>(), value);
+    node<Tag, T> *tree = find(get_root<Tag, T>(), value);
     if (!tree) {
       tree = next<Tag, T>(value);
     }
@@ -760,8 +698,8 @@ private:
   }
 
   bool contains(left_t const &left, right_t const &right) {
-    node<left_tag> *left_find = find<left_tag, left_t>(tree_left, left);
-    node<right_tag> *right_find = find<right_tag, right_t>(tree_right, right);
+    node<left_tag, left_t> *left_find = find<left_tag, left_t>(tree_left, left);
+    node<right_tag, right_t> *right_find = find<right_tag, right_t>(tree_right, right);
 
     return (left_find && equal<left_tag>(left_find->value, left)) ||
            (right_find && equal<right_tag>(right_find->value,right));
@@ -774,31 +712,13 @@ private:
 
     for (left_iterator it = other.begin_left(); it != other.end_left(); it++) {
       auto *tmp = new splay_tree(*it, other.at_left(*it));
-      insert<left_tag>(get_node<left_tag>(tmp));
-      insert<right_tag>(get_node<right_tag>(tmp));
+      insert<left_tag>(get_node_l(tmp));
+      insert<right_tag>(get_node_r(tmp));
     }
   }
 
-  static node<left_tag> *get_opposite(node<right_tag> *t) {
-    return get_node<left_tag>(get_splay(t));
-  }
-
-  static node<right_tag> *get_opposite(node<left_tag> *t) {
-    return get_node<right_tag>(get_splay(t));
-  }
-
-  template <typename Tag>
-  static splay_tree *get_splay(node<Tag> *t) {
-    return static_cast<splay_tree*>(t);
-  }
-
-  template <typename Tag>
-  static node<Tag> *get_node(splay_tree *t) {
-    return static_cast<node<Tag>*>(t);
-  }
-
-  template <typename Tag>
-  node<Tag>* &get_root() const {
+  template <typename Tag, typename T>
+  node<Tag, T>* &get_root() const {
     if constexpr (std::is_same_v<Tag, left_tag>) {
       return tree_left;
     } else {
@@ -806,8 +726,8 @@ private:
     }
   }
 
-  template <typename Tag>
-  node<Tag> *set_tree_root(node<Tag>* t) const {
+  template <typename Tag, typename T>
+  node<Tag, T> *set_tree_root(node<Tag, T>* t) const {
     if constexpr (std::is_same_v<Tag, left_tag>) {
       return tree_left = splay(t);
     } else {
@@ -815,9 +735,9 @@ private:
     }
   }
 
-  void insert_both_trees(splay_tree *node_new) {
-    insert<left_tag>(get_node<left_tag>(node_new));
-    insert<right_tag>(get_node<right_tag>(node_new));
+  void insert_both_trees(splay_tree<left_t, right_t> *node_new) {
+    insert<left_tag>(get_node_l(node_new));
+    insert<right_tag>(get_node_r(node_new));
   }
 
   void clear() {
@@ -826,11 +746,18 @@ private:
     tree_right = nullptr;
   }
 
+  static node<left_tag, left_t> *get_opposite(node<right_tag, right_t> *t) {
+    return get_node_l(get_splay<right_tag, left_t, right_t>(t));
+  }
+
+  static node<right_tag, right_t> *get_opposite(node<left_tag, left_t> *t) {
+    return get_node_r(get_splay<left_tag, left_t, right_t>(t));
+  }
   /**
    * Bimap fields
    */
-  mutable node<left_tag> *tree_left;
-  mutable node<right_tag> *tree_right;
+  mutable node<left_tag, left_t> *tree_left;
+  mutable node<right_tag, right_t> *tree_right;
 
   CompareLeft compare_left;
   CompareRight compare_right;
