@@ -16,11 +16,16 @@ struct bimap {
 
 private:
   using splay_tree_t = splay_tree<left_t, right_t>;
+
   static constexpr node<left_tag, left_t>* (*get_node_l)(splay_tree_t*) =
       &get_node<left_tag, left_t, right_t, left_t>;
-
   static constexpr node<right_tag, right_t>* (*get_node_r)(splay_tree_t*) =
       &get_node<right_tag, left_t, right_t, right_t>;
+
+  static constexpr splay_tree_t *(*get_splay_l)(node<left_tag, left_t >*) =
+    &get_splay<left_tag, left_t, right_t>;
+  static constexpr splay_tree_t *(*get_splay_r)(node<right_tag, right_t >*) =
+    &get_splay<right_tag, left_t, right_t>;
 
   template <typename Tag, typename T>
   bool less(T const &a, T const &b) const {
@@ -33,7 +38,7 @@ private:
 
   template <typename Tag, typename T>
   bool equal(T const &a, T const &b) const {
-    return !less<Tag, T>(a, b) && !less<Tag, T>(b, a);
+    return !less<Tag>(a, b) && !less<Tag>(b, a);
   }
 
   /**
@@ -50,7 +55,7 @@ private:
       return t;
     }
 
-    if (equal<Tag, T>(t->value, value)) {
+    if (equal<Tag>(t->value, value)) {
       return set_tree_root(t);
     }
 
@@ -81,7 +86,7 @@ private:
 
     std::pair<node<Tag, T>*, node<Tag, T>*> tmp = split<Tag>(new_node->value);
 
-    if (tmp.first && tmp.first->value == new_node->value) {
+    if (tmp.first && equal<Tag>(tmp.first->value, new_node->value)) {
       merge(tmp.first, tmp.second);
       return false;
     }
@@ -112,7 +117,7 @@ private:
     }
 
     t = find(t, value);
-    if (t->value != value) {
+    if (!equal<Tag>(t->value, value)) {
       return false;
     }
 
@@ -128,7 +133,7 @@ private:
   }
 
   /**
-   * @return next element or nullptr if element is last in tree
+   * @return next element or nullptr if element is end()
    */
   template <typename Tag, typename T>
   node<Tag, T>* next(node<Tag, T> *t) const {
@@ -151,7 +156,7 @@ private:
   }
 
   /**
-   * @return if there are node with node->value > value,
+   * @return if there is node with node->value > value,
    * return it, nullptr otherwise
    */
   template <typename Tag, typename T>
@@ -163,7 +168,7 @@ private:
     }
 
     while (true) {
-      if (less<Tag, T>(t->value, value) || equal<Tag, T>(t->value, value)) {
+      if (less<Tag, T>(t->value, value) || equal<Tag>(t->value, value)) {
         if (!t->right) {
           return next<Tag>(t);
         }
@@ -176,7 +181,6 @@ private:
       }
     }
   }
-
 
   template <typename Tag, typename T>
   std::pair<node<Tag, T>*, node<Tag, T>*> prev(node<Tag, T> *t) const {
@@ -354,9 +358,9 @@ private:
 
     auto flip() const {
       if constexpr (std::is_same_v<Tag, left_tag>) {
-        return iterator<right_tag, right_t>(get_opposite(tree), bmp);
+        return iterator<right_tag, right_t>(get_opposite<left_tag>(tree), bmp);
       } else {
-        return iterator<left_tag, left_t>(get_opposite(tree), bmp);
+        return iterator<left_tag, left_t>(get_opposite<right_tag>(tree), bmp);
       }
     }
 
@@ -370,11 +374,12 @@ private:
     iterator(node<Tag, T> *tree, bimap const *bmp) : tree(tree), bmp(bmp) {};
     iterator(iterator const &other) : tree(other.tree), bmp(other.bmp) {};
 
-    friend bimap;
+
     /**
      * if tree == nullptr, then iterator = end()
      */
   private:
+    friend bimap;
     node<Tag, T> *tree;
     bimap const *bmp;
   };
@@ -390,31 +395,31 @@ public:
   bimap(CompareLeft compare_left = CompareLeft(),
         CompareRight compare_right = CompareRight())
       : tree_left(nullptr), tree_right(nullptr),
-        compare_left(compare_left), compare_right(compare_right), siz(0) {}
+        compare_left(compare_left), compare_right(compare_right), tree_size(0) {}
 
   // Конструкторы от других и присваивания
-  bimap(bimap const &other) : tree_left(nullptr), tree_right(nullptr) {
-    copy(other);
+  bimap(bimap const &other) : tree_left(nullptr), tree_right(nullptr),
+    compare_left(other.compare_left), compare_right(other.compare_right), tree_size(other.tree_size) {
+    for (left_iterator it = other.begin_left(); it != other.end_left(); it++) {
+      auto *tmp = new splay_tree_t(*it, other.at_left(*it));
+      insert_both_trees(tmp);
+    }
   }
   bimap(bimap &&other) noexcept
       : tree_left(other.tree_left), tree_right(other.tree_right),
         compare_left(std::move(other.compare_left)),
-        compare_right(std::move(other.compare_right)), siz(other.siz) {}
+        compare_right(std::move(other.compare_right)),
+        tree_size(other.tree_size) {}
 
   bimap &operator=(bimap const &other) {
-    clear();
-    copy(other);
+    bimap tmp(other);
+    swap(tmp);
 
     return *this;
   }
   bimap &operator=(bimap &&other) noexcept {
-    clear();
-
-    tree_left = other.tree_left;
-    tree_right = other.tree_right;
-    compare_left = std::move(other.compare_left);
-    compare_right = std::move(other.compare_right);
-    siz = other.siz;
+    swap(other);
+    return *this;
   }
 
   // Деструктор. Вызывается при удалении объектов bimap.
@@ -428,40 +433,20 @@ public:
   // Если такой left или такой right уже присутствуют в bimap, вставка не
   // производится и возвращается end_left().
   left_iterator insert(left_t const &left, right_t const &right) {
-    if (contains(left, right)) {
-      return end_left();
-    }
-
-    siz++;
-    insert_both_trees(new splay_tree_t(left, right));
-    return left_iterator(find<left_tag, left_t>(tree_left, left), this);
+    return !contains(left, right) ? insert_operation<left_tag, left_t>(
+               new splay_tree_t(left, right)) : end_left();
   }
   left_iterator insert(left_t const &left, right_t &&right) {
-    if (contains(left, right)) {
-      return end_left();
-    }
-
-    siz++;
-    insert_both_trees(new splay_tree_t(left, std::move(right)));
-    return left_iterator(find<left_tag, left_t>(tree_left, left), this);
+    return !contains(left, right) ? insert_operation<left_tag, left_t>(
+               new splay_tree_t(left, std::move(right))) : end_left();
   }
   left_iterator insert(left_t &&left, right_t const &right) {
-    if (contains(left, right)) {
-      return end_left();
-    }
-
-    siz++;
-    insert_both_trees(new splay_tree_t(std::move(left), right));
-    return left_iterator(find<left_tag, left_t>(tree_left, left), this);
+    return !contains(left, right) ? insert_operation<left_tag, left_t>(
+               new splay_tree_t(std::move(left), right)) : end_left();
   }
   left_iterator insert(left_t &&left, right_t &&right) {
-    if (contains(left, right)) {
-      return end_left();
-    }
-
-    siz++;
-    insert_both_trees(new splay_tree_t(std::move(left), std::move(right)));
-    return left_iterator(find<left_tag, left_t>(tree_left, left), this);
+    return !contains(left, right) ? insert_operation<left_tag, left_t>(
+               new splay_tree_t(std::move(left), std::move(right))) : end_left();
   }
 
   // Удаляет элемент и соответствующий ему парный.
@@ -472,13 +457,13 @@ public:
   left_iterator erase_left(left_iterator it) {
     splay(it.tree);
 
-    splay_tree_t *tmp = get_splay<left_tag, left_t, right_t>(it.tree);
+    splay_tree_t *tmp = get_splay_l(it.tree);
     node<left_tag, left_t> *nxt = next(tree_left);
 
     remove<left_tag>(*it);
     remove<right_tag>(get_node_r(tmp)->value);
 
-    siz--;
+    tree_size--;
     delete tmp;
 
     return left_iterator(nxt, this);
@@ -487,7 +472,7 @@ public:
   // не делает ничего Возвращает была ли пара удалена
   bool erase_left(left_t const &left) {
     node<left_tag, left_t> *t = find(tree_left, left);
-    if (!t || t->value != left) {
+    if (!t || !equal<left_tag>(t->value, left)) {
       return false;
     }
 
@@ -498,20 +483,20 @@ public:
   right_iterator erase_right(right_iterator it) {
     splay(it.tree);
 
-    splay_tree_t *tmp = get_splay<right_tag, left_t, right_t>(it.tree);
+    splay_tree_t *tmp = get_splay_r(it.tree);
     node<right_tag, right_t> *nxt = next(tree_right);
 
     remove<left_tag>(get_node_l(tmp)->value);
     remove<right_tag>(*it);
 
-    siz--;
+    tree_size--;
     delete tmp;
 
     return right_iterator(nxt, this);
   }
   bool erase_right(right_t const &right) {
     node<right_tag, right_t> *t = find(tree_right, right);
-    if (!t || t->value != right) {
+    if (!t || !equal<right_tag>(t->value, right)) {
       return false;
     }
 
@@ -539,7 +524,7 @@ public:
   // Возвращает итератор по элементу. Если не найден - соответствующий end()
   left_iterator find_left(left_t const &left) const {
     node<left_tag, right_t> *t = find(tree_left, left);
-    if (t && t->value == left) {
+    if (t && equal<left_tag>(t->value, left)) {
       return left_iterator(t, this);
     } else {
       return end_left();
@@ -547,7 +532,7 @@ public:
   }
   right_iterator find_right(right_t const &right) const {
     node<right_tag, right_t> *t = find(tree_right, right);
-    if (t && t->value == right) {
+    if (t && equal<right_tag>(t->value, right)) {
       return right_iterator(t, this);
     } else {
       return end_right();
@@ -559,21 +544,23 @@ public:
   right_t const &at_left(left_t const &key) const {
     find<left_tag, left_t>(tree_left, key);
 
-    node<right_tag, right_t> *opposite_node = get_node_r(get_splay<left_tag, left_t, right_t, left_t>(tree_left));
-    if (tree_left && tree_left->value == key) {
+    node<right_tag, right_t> *opposite_node =
+        get_node_r(get_splay_l(tree_left));
+    if (tree_left && equal<left_tag>(tree_left->value, key)) {
       return opposite_node->value;
     }
-    throw std::out_of_range("bimap::invalid iterator");
+    throw std::out_of_range("bimap::at_left - no such element");
   }
 
   left_t const &at_right(right_t const &key) const {
     find<right_tag, right_t>(tree_right, key);
 
-    node<left_tag, left_t> *opposite_node = get_node_l(get_splay<right_tag, left_t, right_t>(tree_right));
-    if (tree_right && tree_right->value == key) {
+    node<left_tag, left_t> *opposite_node =
+        get_node_l(get_splay_r(tree_right));
+    if (tree_right && equal<right_tag>(tree_right->value, key)) {
       return opposite_node->value;
     }
-    throw std::out_of_range("bimap::invalid iterator");
+    throw std::out_of_range("bimap::at_right - no such element");
   }
 
   // Возвращает противоположный элемент по элементу
@@ -583,43 +570,46 @@ public:
   // соответствующий ему элемент на запрашиваемый (смотри тесты)
   right_t const &at_left_or_default(left_t const &key) {
     find<left_tag, left_t>(tree_left, key);
-    node<right_tag, right_t> *opposite_node = get_node_r(get_splay<left_tag, left_t, right_t>(tree_left));
+    node<right_tag, right_t> *opposite_node =
+        get_node_r(get_splay_l(tree_left));
 
     if (tree_left) {
-      if (tree_left->value == key) {
+      if (equal<left_tag>(tree_left->value, key)) {
         return opposite_node->value;
       } else {
-        find<right_tag, right_t>(tree_right, right_t());
-        if (tree_right->value == right_t()) {
-          erase_right(right_t());
+        right_t value = right_t();
+        find<right_tag, right_t>(tree_right, value);
+        if (equal<right_tag>(tree_right->value, value)) {
+          erase_right(right_iterator(tree_right, this));
         }
-        insert(key, right_t());
+        insert(key, value);
       }
     } else {
       insert(key, right_t());
     }
 
-    return get_node_r(get_splay<left_tag, left_t, right_t>(find<left_tag, left_t>(tree_left, key)))->value;
+    return get_node_r(get_splay_l(find<left_tag, left_t>(tree_left, key)))->value;
   }
   left_t const &at_right_or_default(right_t const &key) {
     find<right_tag, right_t>(tree_right, key);
-    node<left_tag, left_t> *opposite_node = get_node_l(get_splay<right_tag, left_t, right_t>(tree_right));
+    node<left_tag, left_t> *opposite_node = get_node_l(get_splay_r(tree_right));
 
     if (tree_right) {
-      if (tree_right->value == key) {
+      if (equal<right_tag>(tree_right->value, key)) {
         return opposite_node->value;
       } else {
-        find<left_tag, left_t>(tree_left, left_t());
-        if (tree_left->value == left_t()) {
-          erase_left(left_t());
+        left_t value = left_t();
+        find<left_tag, left_t>(tree_left, value);
+        if (equal<left_tag>(tree_left->value, value)) {
+          erase_left(left_iterator(tree_left, this));
         }
-        insert(left_t(), key);
+        insert(value, key);
       }
     } else {
       insert(left_t(), key);
     }
 
-    return get_node_l(get_splay<right_tag, left_t, right_t>(find<right_tag, right_t>(tree_right, key)))->value;
+    return get_node_l(get_splay_r(find<right_tag, right_t>(tree_right, key)))->value;
   }
 
   // lower и upper bound'ы по каждой стороне
@@ -659,17 +649,17 @@ public:
 
   // Проверка на пустоту
   bool empty() const {
-    return siz == 0;
+    return tree_size == 0;
   }
 
   // Возвращает размер бимапы (кол-во пар)
   std::size_t size() const {
-    return siz;
+    return tree_size;
   }
 
   // операторы сравнения
   bool operator==(bimap const &b) const {
-    if (siz != b.siz) {
+    if (tree_size != b.tree_size) {
       return false;
     }
 
@@ -677,7 +667,7 @@ public:
     left_iterator l2 = b.begin_left();
 
     while (l1 != end_left()) {
-      if (*l1 != *l2 || at_left(*l1) != b.at_left(*l2)) {
+      if (*l1 != *l2 || *l1.flip() != *l2.flip()) {
         return false;
       }
       l1++;
@@ -690,6 +680,14 @@ public:
   }
 
 private:
+  void swap(bimap &second) {
+    using std::swap;
+
+    swap(tree_left, second.tree_left);
+    swap(tree_right, second.tree_right);
+    swap(tree_size, second.tree_size);
+  }
+
   template <typename Tag, typename T>
   auto bound_operation(T const &value, bool lower_bound) const {
     node<Tag, T> *tree = find(get_root<Tag, T>(), value);
@@ -697,10 +695,19 @@ private:
       tree = next<Tag, T>(value);
     }
 
-    if (tree && (lower_bound ? tree->value < value : tree->value <= value)) {
+    if (tree && (lower_bound ? less<Tag>(tree->value, value) :
+        (less<Tag>(tree->value, value) || equal<Tag>(tree->value, value)))) {
       return iterator<Tag, T>(next(tree), this);
     }
+
     return iterator<Tag, T>(tree, this);
+  }
+
+  template <typename Tag, typename T>
+  iterator<Tag, T> insert_operation(splay_tree_t *new_node) {
+    tree_size++;
+    insert_both_trees(new_node);
+    return iterator<Tag, T>(new_node, this);
   }
 
   bool contains(left_t const &left, right_t const &right) {
@@ -709,18 +716,6 @@ private:
 
     return (left_find && equal<left_tag>(left_find->value, left)) ||
            (right_find && equal<right_tag>(right_find->value,right));
-  }
-
-  void copy(bimap const &other) {
-    compare_left = other.compare_left;
-    compare_right = other.compare_right;
-    siz = other.siz;
-
-    for (left_iterator it = other.begin_left(); it != other.end_left(); it++) {
-      auto *tmp = new splay_tree_t(*it, other.at_left(*it));
-      insert<left_tag>(get_node_l(tmp));
-      insert<right_tag>(get_node_r(tmp));
-    }
   }
 
   template <typename Tag, typename T>
@@ -746,18 +741,13 @@ private:
     insert<right_tag>(get_node_r(node_new));
   }
 
-  void clear() {
-    erase_left(begin_left(), end_left());
-    tree_left = nullptr;
-    tree_right = nullptr;
-  }
-
-  static node<left_tag, left_t> *get_opposite(node<right_tag, right_t> *t) {
-    return get_node_l(get_splay<right_tag, left_t, right_t>(t));
-  }
-
-  static node<right_tag, right_t> *get_opposite(node<left_tag, left_t> *t) {
-    return get_node_r(get_splay<left_tag, left_t, right_t>(t));
+  template <typename Tag, typename T>
+  static auto *get_opposite(node<Tag, T> *t) {
+    if constexpr (std::is_same_v<Tag, left_tag>) {
+      return get_node_r(get_splay_l(t));
+    } else {
+      return get_node_l(get_splay_r(t));
+    }
   }
   /**
    * Bimap fields
@@ -768,5 +758,5 @@ private:
   CompareLeft compare_left;
   CompareRight compare_right;
 
-  mutable size_t siz;
+  size_t tree_size;
 };
