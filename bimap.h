@@ -412,12 +412,20 @@ public:
         tree_size(other.tree_size) {}
 
   bimap &operator=(bimap const &other) {
+    if (this == &other) {
+      return *this;
+    }
+
     bimap tmp(other);
     swap(tmp);
 
     return *this;
   }
   bimap &operator=(bimap &&other) noexcept {
+    if (this == &other) {
+      return *this;
+    }
+
     swap(other);
     return *this;
   }
@@ -523,7 +531,7 @@ public:
 
   // Возвращает итератор по элементу. Если не найден - соответствующий end()
   left_iterator find_left(left_t const &left) const {
-    node<left_tag, right_t> *t = find(tree_left, left);
+    node<left_tag, left_t> *t = find(tree_left, left);
     if (t && equal<left_tag>(t->value, left)) {
       return left_iterator(t, this);
     } else {
@@ -568,6 +576,7 @@ public:
   // сторону кладет дефолтный элемент, ссылку на который и возвращает
   // Если дефолтный элемент уже лежит в противоположной паре - должен поменять
   // соответствующий ему элемент на запрашиваемый (смотри тесты)
+  template <typename T = right_t, std::enable_if_t<std::is_default_constructible_v<T>, int> = 0>
   right_t const &at_left_or_default(left_t const &key) {
     find<left_tag, left_t>(tree_left, key);
     node<right_tag, right_t> *opposite_node =
@@ -582,7 +591,7 @@ public:
         if (equal<right_tag>(tree_right->value, value)) {
           erase_right(right_iterator(tree_right, this));
         }
-        insert(key, value);
+        insert(key, std::move(value));
       }
     } else {
       insert(key, right_t());
@@ -590,6 +599,8 @@ public:
 
     return get_node_r(get_splay_l(find<left_tag, left_t>(tree_left, key)))->value;
   }
+
+  template <typename T = left_t , std::enable_if_t<std::is_default_constructible_v<T>, int> = 0>
   left_t const &at_right_or_default(right_t const &key) {
     find<right_tag, right_t>(tree_right, key);
     node<left_tag, left_t> *opposite_node = get_node_l(get_splay_r(tree_right));
@@ -603,7 +614,7 @@ public:
         if (equal<left_tag>(tree_left->value, value)) {
           erase_left(left_iterator(tree_left, this));
         }
-        insert(value, key);
+        insert(std::move(value), key);
       }
     } else {
       insert(left_t(), key);
@@ -667,7 +678,7 @@ public:
     left_iterator l2 = b.begin_left();
 
     while (l1 != end_left()) {
-      if (*l1 != *l2 || *l1.flip() != *l2.flip()) {
+      if (!equal<left_tag>(*l1, *l2) || !equal<right_tag>(*l1.flip(), *l2.flip())) {
         return false;
       }
       l1++;
